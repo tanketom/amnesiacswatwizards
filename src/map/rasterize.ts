@@ -22,6 +22,8 @@ export interface BuildingInfo {
   floorTiles: number[];
   doorTiles: number[];
   windowTiles: number[];
+  /** Interior partition walls as clean segments (tile-center coords) with their doorway. */
+  partitions: { from: Pt; to: Pt; door: Pt }[];
   centroid: Pt;
   rooms: RoomInfo[];
   sizeClass: 'small' | 'medium' | 'large';
@@ -101,6 +103,7 @@ export function rasterizeCity(model: CityModel, seed: number): RasterCity {
       floorTiles: floor,
       doorTiles: [],
       windowTiles: [],
+      partitions: [],
       centroid: centroidOfTiles(floor, W),
       rooms: [],
       sizeClass: floor.length > 90 ? 'large' : floor.length > 30 ? 'medium' : 'small',
@@ -383,6 +386,23 @@ function bspPartition(grid: TileGrid, b: BuildingInfo, rng: RNG): void {
     for (const t of wallTiles) {
       grid.terrain[t] = t === door ? Terrain.Door : Terrain.Wall;
     }
+
+    // record the wall as one clean segment for the renderer (tile-center coords)
+    let tmin = Infinity;
+    let tmax = -Infinity;
+    for (const t of wallTiles) {
+      const x = t % W;
+      const y = Math.floor(t / W);
+      const along = (x - px0) * wdx + (y - py0) * wdy;
+      if (along < tmin) tmin = along;
+      if (along > tmax) tmax = along;
+    }
+    b.partitions.push({
+      from: { x: px0 + wdx * (tmin - 0.6), y: py0 + wdy * (tmin - 0.6) },
+      to: { x: px0 + wdx * (tmax + 0.6), y: py0 + wdy * (tmax + 0.6) },
+      door: { x: door % W, y: Math.floor(door / W) },
+    });
+
     split(sideA, depth + 1);
     split(sideB, depth + 1);
   };

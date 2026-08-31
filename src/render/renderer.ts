@@ -18,7 +18,6 @@ const INK = 0x39332a;
 const PAPER = 0xd8d2c0;
 const ROAD = 0xe4dfd0;
 const BUILDING_FILL = 0xc9c1a9;
-const FLOOR_FILL = 0xd2cab2;
 const GREEN = 0xaeb28c;
 const WATER = 0x9fb0b5;
 const TREE = 0x76825a;
@@ -636,40 +635,49 @@ export class Renderer {
       g.fill(BUILDING_FILL).stroke({ width: 2, color: INK, join: 'round' });
     }
 
-    // 6. interior detail from the grid: room floors, partition walls, doors.
-    //    (Rectilinear is fine here — watabou's own dungeons are rectilinear;
-    //    it's the streets and blocks that need to stay organic.)
+    // 6. interior partitions: one straight ink line per wall, gap at the door —
+    //    drawn from the generator's own segments, never from tiles.
+    for (const b of this.state.raster.buildings) {
+      for (const part of b.partitions) {
+        const fx = (part.from.x + 0.5) * TILE;
+        const fy = (part.from.y + 0.5) * TILE;
+        const tx = (part.to.x + 0.5) * TILE;
+        const ty = (part.to.y + 0.5) * TILE;
+        const len = Math.hypot(tx - fx, ty - fy);
+        if (len < 1) continue;
+        const ux = (tx - fx) / len;
+        const uy = (ty - fy) / len;
+        const dpx = (part.door.x + 0.5) * TILE;
+        const dpy = (part.door.y + 0.5) * TILE;
+        const doorAt = (dpx - fx) * ux + (dpy - fy) * uy;
+        const gap = TILE * 0.8;
+        const segs: [number, number][] = [
+          [0, Math.max(0, doorAt - gap)],
+          [Math.min(len, doorAt + gap), len],
+        ];
+        for (const [s0, s1] of segs) {
+          if (s1 - s0 < TILE * 0.3) continue;
+          g.moveTo(fx + ux * s0, fy + uy * s0)
+            .lineTo(fx + ux * s1, fy + uy * s1)
+            .stroke({ width: TILE * 0.4, color: INK, cap: 'square' });
+        }
+      }
+    }
+
+    // 7. doors, windows, furniture from the grid.
     for (let y = 0; y < grid.height; y++) {
       for (let x = 0; x < W; x++) {
         const idx = y * W + x;
         const terr = grid.terrain[idx];
-        if (terr === Terrain.Floor) {
-          g.rect(x * TILE, y * TILE, TILE, TILE).fill(FLOOR_FILL);
-        } else if (terr === Terrain.Wall && grid.buildingId[idx] >= 0 && this.isInteriorWall(x, y)) {
-          // partitions as strokes toward every wall-like neighbor (8-way), so
-          // diagonal, building-aligned walls read as continuous lines
-          const cx = x * TILE + TILE / 2;
-          const cy = y * TILE + TILE / 2;
-          g.circle(cx, cy, TILE * 0.21).fill(INK);
-          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]] as const) {
-            const nx = x + dx;
-            const ny = y + dy;
-            if (!this.isWallLike(nx, ny)) continue;
-            if (grid.buildingId[ny * W + nx] !== grid.buildingId[idx]) continue;
-            g.moveTo(cx, cy)
-              .lineTo(cx + (dx * TILE) / 2, cy + (dy * TILE) / 2)
-              .stroke({ width: TILE * 0.42, color: INK, cap: 'round' });
-          }
-        } else if (terr === Terrain.Door) {
+        if (terr === Terrain.Door) {
           // a gap in the wall; the leaf hangs from a hinge and lies along the wall
           const dg = this.isShellPortal(x, y) ? this.portalsG : g;
-          dg.rect(x * TILE + 1, y * TILE + 1, TILE - 2, TILE - 2).fill(FLOOR_FILL);
+          dg.rect(x * TILE + 1, y * TILE + 1, TILE - 2, TILE - 2).fill(BUILDING_FILL);
           if (!this.doorAnims.has(y * W + x)) {
             this.drawDoorLeaf(dg, x, y, grid.isDoorOpen(x, y) ? 1 : 0);
           }
         } else if (terr === Terrain.Container) {
           // chest / cupboard: backed up against its wall, long side parallel to it
-          g.rect(x * TILE, y * TILE, TILE, TILE).fill(FLOOR_FILL);
           let bx = 0;
           let by = 0;
           for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]] as const) {
@@ -708,7 +716,7 @@ export class Renderer {
           wg.rect(x * TILE + 1.5, y * TILE + 1.5, TILE - 3, TILE - 3).fill(BUILDING_FILL);
           this.slab(wg, cx, cy, a, TILE * 0.95, TILE * 0.34);
           if (grid.opened(x, y)) {
-            wg.fill(FLOOR_FILL).stroke({ width: 1, color: INK, alpha: 0.8 });
+            wg.fill(BUILDING_FILL).stroke({ width: 1, color: INK, alpha: 0.8 });
           } else {
             wg.fill(0xaebfc7).stroke({ width: 1, color: INK, alpha: 0.8 });
             // glint along the pane
@@ -834,25 +842,6 @@ export class Renderer {
     g.lineTo(cx - ux * hl - vx * ht, cy - uy * hl - vy * ht);
     g.lineTo(cx + ux * hl - vx * ht, cy + uy * hl - vy * ht);
     g.closePath();
-  }
-
-  /**
-   * Wall tile fully surrounded by this building AND touching real floor —
-   * a BSP partition. (Solid pruned buildings have no floor: no ink marks.)
-   */
-  private isInteriorWall(x: number, y: number): boolean {
-    const grid = this.state.grid;
-    const W = grid.width;
-    const id = grid.buildingId[y * W + x];
-    let touchesFloor = false;
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-      const nx = x + dx, ny = y + dy;
-      if (!grid.inBounds(nx, ny)) return false;
-      const ni = ny * W + nx;
-      if (grid.buildingId[ni] !== id) return false;
-      if (grid.terrain[ni] === Terrain.Floor || grid.terrain[ni] === Terrain.Door) touchesFloor = true;
-    }
-    return touchesFloor;
   }
 
   /**
