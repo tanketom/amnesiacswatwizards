@@ -31,7 +31,14 @@ Imported cities persist per browser via localStorage on both hosts.
 
 ## Playing
 
+- **Daily Contract**: everyone gets the same city, drop, and contract each day
+  (seeded from the date). The debrief scores the run – fewer turns, lower
+  alarm, no civilian casualties and no wizards down all pay – and "Copy
+  result" puts a shareable summary on your clipboard. Personal bests are
+  remembered per day.
 - **Seed** drives everything: city, quest, NPCs, clue chain. Same seed = same mission.
+- **Shift+click** rallies the whole squad toward a point in one action – each
+  wizard walks as far as their AP allows and forms up without stacking.
 - **Click a wizard** (or press `1–4`) to select. Click ground to move
   (blue tint = 1 AP, gold = 2 AP). Arm a spell, then click its target.
 - **The amnesia is the game**: the map starts black. The target is real and

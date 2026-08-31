@@ -76,6 +76,21 @@ function describeUnit(u: Unit): string {
   return u.name;
 }
 
+/** Distance from point to line segment (all in tile coordinates). */
+function distToSegment(px: number, py: number, a: Pt, b: Pt): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / len2));
+  return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
+}
+
+/** Angular distance between two LINE directions (mod π). */
+function lineAngleDist(a: number, b: number): number {
+  const d = (((a - b) % Math.PI) + Math.PI) % Math.PI;
+  return Math.min(d, Math.PI - d);
+}
+
 function pointInPoly(p: Pt, poly: Pt[]): boolean {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -130,6 +145,8 @@ export class Renderer {
   /** Roofs: model polygon + which building's exploration lifts it. */
   private roofPolys: { points: Pt[]; buildingId: number; orientation: number | null }[] = [];
   private liftedRoofs = new Set<number>();
+  /** Building footprint polygons by id, for exact facade angles. */
+  private polyByBuilding = new Map<number, { points: Pt[]; orientation: number }>();
   /** Door tiles whose opening we have already witnessed (no re-swing on redraw). */
   private knownOpen = new Set<number>();
   debugReveal = false;
@@ -187,6 +204,7 @@ export class Renderer {
       const bid = state.grid.buildingId[cy * state.grid.width + cx];
       const info = state.raster.buildings.find((b) => b.id === bid);
       this.roofPolys.push({ points: poly.points, buildingId: info ? bid : -1, orientation: info?.orientation ?? null });
+      if (info) this.polyByBuilding.set(bid, { points: poly.points, orientation: info.orientation });
     }
 
     this.hoverLabel = new Text({
@@ -632,7 +650,7 @@ export class Renderer {
           // diagonal, building-aligned walls read as continuous lines
           const cx = x * TILE + TILE / 2;
           const cy = y * TILE + TILE / 2;
-          g.circle(cx, cy, TILE * 0.27).fill(INK);
+          g.circle(cx, cy, TILE * 0.21).fill(INK);
           for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]] as const) {
             const nx = x + dx;
             const ny = y + dy;
@@ -640,7 +658,7 @@ export class Renderer {
             if (grid.buildingId[ny * W + nx] !== grid.buildingId[idx]) continue;
             g.moveTo(cx, cy)
               .lineTo(cx + (dx * TILE) / 2, cy + (dy * TILE) / 2)
-              .stroke({ width: TILE * 0.5, color: INK, cap: 'round' });
+              .stroke({ width: TILE * 0.42, color: INK, cap: 'round' });
           }
         } else if (terr === Terrain.Door) {
           // a gap in the wall; the leaf hangs from a hinge and lies along the wall
@@ -663,7 +681,14 @@ export class Renderer {
           const bl = Math.hypot(bx, by);
           const nx = bl > 0 ? bx / bl : 0;
           const ny = bl > 0 ? by / bl : 0;
-          const angle = bl > 0 ? Math.atan2(ny, nx) + Math.PI / 2 : 0;
+          let angle = bl > 0 ? Math.atan2(ny, nx) + Math.PI / 2 : 0;
+          // snap to the building's own axes so furniture agrees with the walls
+          const crec = this.polyByBuilding.get(grid.buildingId[idx]);
+          if (crec) {
+            angle = lineAngleDist(crec.orientation, angle) <= lineAngleDist(crec.orientation + Math.PI / 2, angle)
+              ? crec.orientation
+              : crec.orientation + Math.PI / 2;
+          }
           const ccx = x * TILE + TILE / 2 + nx * TILE * 0.12;
           const ccy = y * TILE + TILE / 2 + ny * TILE * 0.12;
           this.slab(g, ccx, ccy, angle, TILE * 0.84, TILE * 0.58);
@@ -722,13 +747,8 @@ export class Renderer {
     return t === Terrain.Wall || t === Terrain.Door || t === Terrain.Window;
   }
 
-  /**
-   * Direction of the wall a door/window sits in, from its wall-like neighbors.
-   * Angle-doubling averages line directions (a wall to the east and one to the
-   * west are the same line), so diagonal stair-stepped walls come out at ~45°.
-   * Orthogonal neighbors weigh double so straight walls stay axis-aligned.
-   */
-  private portalAngle(x: number, y: number): number {
+  /** Neighbor-voted line direction (angle-doubled average of wall-like neighbors). */
+  private votedAngle(x: number, y: number): number | null {
     let sx = 0;
     let sy = 0;
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]] as const) {
@@ -738,8 +758,52 @@ export class Renderer {
       sx += Math.cos(2 * a) * w;
       sy += Math.sin(2 * a) * w;
     }
-    if (sx === 0 && sy === 0) return 0;
+    if (sx === 0 && sy === 0) return null;
     return Math.atan2(sy, sx) / 2;
+  }
+
+  /** Angle of the building's polygon edge nearest to this tile (exact facade direction). */
+  private nearestEdgeAngle(bid: number, px: number, py: number): number | null {
+    const rec = this.polyByBuilding.get(bid);
+    if (!rec) return null;
+    let best: number | null = null;
+    let bestD = Infinity;
+    const pts = rec.points;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      const d = distToSegment(px, py, a, b);
+      if (d < bestD) {
+        bestD = d;
+        best = Math.atan2(b.y - a.y, b.x - a.x);
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Direction of the wall a door/window sits in. Shell portals take the exact
+   * angle of the nearest footprint edge; interior portals snap to the
+   * building's own axes (whichever agrees better with the neighboring walls);
+   * neighbor voting is the fallback for buildings without a polygon.
+   */
+  private portalAngle(x: number, y: number): number {
+    const grid = this.state.grid;
+    const bid = grid.buildingId[y * grid.width + x];
+    const rec = bid >= 0 ? this.polyByBuilding.get(bid) : undefined;
+    if (rec) {
+      if (this.isShellPortal(x, y)) {
+        const a = this.nearestEdgeAngle(bid, x + 0.5, y + 0.5);
+        if (a !== null) return a;
+      } else {
+        const v = this.votedAngle(x, y);
+        const c1 = rec.orientation;
+        const c2 = rec.orientation + Math.PI / 2;
+        if (v === null) return c1;
+        return lineAngleDist(c1, v) <= lineAngleDist(c2, v) ? c1 : c2;
+      }
+    }
+    return this.votedAngle(x, y) ?? 0;
   }
 
   /**

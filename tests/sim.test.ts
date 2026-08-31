@@ -229,6 +229,25 @@ describe('cover & peeking', () => {
     void before; // noise only counts if witnessed; the log line always fires
   });
 
+  it('rally moves the whole squad toward a point, no stacking', () => {
+    const { state } = makeMission(7);
+    openArena(state);
+    const wizards = state.squadUnits();
+    wizards.forEach((u, i) => {
+      u.x = 3 + i;
+      u.y = 2;
+      u.ap = 2;
+    });
+    state.updateFov();
+    expect(state.rallyTo({ x: 14, y: 6 })).toBe(true);
+    for (const u of wizards) {
+      expect(u.ap).toBeLessThan(2); // everyone spent movement
+      expect(Math.hypot(u.x - 14, u.y - 6)).toBeLessThan(Math.hypot(3 - 14, 2 - 6));
+    }
+    const tiles = new Set(wizards.map((u) => u.y * state.grid.width + u.x));
+    expect(tiles.size).toBe(4);
+  });
+
   it('windows smash loudly once — or open silently first', () => {
     // smash path: glass breaks, witnessed, and never breaks again
     const a = makeMission(7);

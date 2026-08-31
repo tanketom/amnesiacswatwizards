@@ -485,6 +485,70 @@ export class MissionState {
     }
   }
 
+  /**
+   * Rally: every wizard with AP moves toward the clicked point at once,
+   * forming up on the nearest open tiles (paths truncated to their AP budget).
+   */
+  rallyTo(dest: Pt): boolean {
+    if (this.phase !== 'player') return false;
+    if (!this.grid.walkable(dest.x, dest.y)) return false;
+    const spots = this.openTilesAround(dest, 8);
+    const claimed = new Set<number>();
+    const wizards = this.squadUnits()
+      .filter((u) => u.ap > 0)
+      .sort((a, b) => Math.hypot(a.x - dest.x, a.y - dest.y) - Math.hypot(b.x - dest.x, b.y - dest.y));
+    let moved = 0;
+    for (const u of wizards) {
+      const spot = spots.find(
+        (s) => !claimed.has(s.y * this.grid.width + s.x) && !(s.x === u.x && s.y === u.y),
+      );
+      if (!spot) break;
+      const occ = this.occupied(u);
+      const path = findPath(this.grid, u, spot, { blocked: occ, maxCost: 70 });
+      if (!path || path.length === 0) {
+        claimed.add(spot.y * this.grid.width + spot.x);
+        continue;
+      }
+      // walk the path as far as this wizard's AP allows, ending on a free tile
+      const budget = u.ap * this.effectiveMove(u) * 2;
+      let cost = 0;
+      let endIdx = -1;
+      let prev: Pt = u;
+      for (let i = 0; i < path.length; i++) {
+        const p = path[i];
+        cost += p.x !== prev.x && p.y !== prev.y ? 3 : 2;
+        if (this.grid.get(p.x, p.y) === Terrain.Window) cost += WINDOW_CLIMB_COST;
+        if (cost > budget) break;
+        if (!occ.has(p.y * this.grid.width + p.x)) endIdx = i;
+        prev = p;
+      }
+      if (endIdx < 0) continue;
+      const walked = path.slice(0, endIdx + 1);
+      let usedCost = 0;
+      prev = u;
+      for (const p of walked) {
+        usedCost += p.x !== prev.x && p.y !== prev.y ? 3 : 2;
+        if (this.grid.get(p.x, p.y) === Terrain.Window) usedCost += WINDOW_CLIMB_COST;
+        prev = p;
+      }
+      const end = walked[walked.length - 1];
+      u.ap -= Math.min(u.ap, Math.ceil(usedCost / (this.effectiveMove(u) * 2)));
+      u.x = end.x;
+      u.y = end.y;
+      u.overwatch = false;
+      claimed.add(end.y * this.grid.width + end.x);
+      claimed.add(spot.y * this.grid.width + spot.x);
+      this.bus.emit('unitMoved', { unitId: u.id, path: walked });
+      this.traverseEffects(u, walked);
+      moved++;
+    }
+    if (moved > 0) {
+      this.updateFov();
+      this.afterPlayerAction();
+    }
+    return moved > 0;
+  }
+
   /** Free action: ease open an adjacent closed door or unlatch an intact window. */
   openAdjacentPortal(u: Unit, tile: Pt): boolean {
     if (this.phase !== 'player' || u.faction !== 'squad' || !u.alive) return false;

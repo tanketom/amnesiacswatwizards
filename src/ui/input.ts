@@ -93,6 +93,15 @@ export function attachInput(
       return;
     }
 
+    // shift+click ground -> rally the whole squad there
+    if (e.shiftKey) {
+      if (state.rallyTo(tile)) {
+        hud.refresh();
+        renderer.refreshUnits();
+      }
+      return;
+    }
+
     // click ground -> move selected
     if (sel && sel.alive) {
       const moved = state.tryMove(sel, tile);

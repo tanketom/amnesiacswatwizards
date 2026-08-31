@@ -33,11 +33,11 @@ export function generateQuest(raster: RasterCity, rng: RNG, kind?: QuestKind): Q
   const questKind: QuestKind = kind ?? (rng.chance(0.5) ? 'assassinate' : 'extract');
   const arch = rng.pick(ARCHETYPES);
 
-  // Target building: prefer archetype district tags, medium/large.
-  const preferred = candidates.filter(
-    (b) => arch.preferredTags.includes(b.district) && b.sizeClass !== 'small',
-  );
-  const pool = preferred.length > 0 ? preferred : candidates.filter((b) => b.sizeClass !== 'small');
+  // Target building: prefer archetype district tags; any building with a
+  // dozen floor tiles can be a hideout, so modest houses get picked too.
+  const roomy = candidates.filter((b) => b.floorTiles.length >= 12);
+  const preferred = roomy.filter((b) => arch.preferredTags.includes(b.district));
+  const pool = preferred.length >= 3 ? preferred : roomy;
   const tb = rng.pick(pool.length > 0 ? pool : candidates);
 
   const attrsOf = new Map<number, BuildingAttrs>();
